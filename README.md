@@ -1,5 +1,7 @@
 # NativeNovatekTouch
 
-Novatek NT36532E touch driver for sheng.
+Novatek NT36532E touch driver for sheng. Implements the controller protocol and publishes HID touch events.
 
-Maintained as an independent module and included by [UniXNU-sheng](https://github.com/UniXNU/UniXNU-sheng) at `drivers/NativeNovatekTouch`.
+Current state: touch works in SpringBoard and backboardd.
+
+Included by UniXNU-sheng and linked into the sheng kernel.
