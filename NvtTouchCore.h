@@ -41,6 +41,11 @@
 #define NVT_UP_THRESHOLD 220
 #define NVT_COORDINATE_REDUCE 25
 #define NVT_PALM_MIN_NODES 60
+// The reference follows the slow drift of the panel: in a frame without a node at the peak threshold every node moves
+// 1/NVT_REFERENCE_RATE of the way to its value (nodes near a finger are left alone: absorbing its fringe would shift its centroid).
+// A reference taken once at startup drifted far enough in ten minutes for maxima above the noise floor to appear all over the panel
+// (int-274: 51765 merges).
+#define NVT_REFERENCE_RATE 32
 
 struct nvt_contact {
     int slot, tracking_id;
@@ -75,6 +80,9 @@ struct nvt_touch_core {
     int smoothed_max;
     // Maxima folded into a stronger one within NVT_MERGE_SPAN nodes (one finger seen as two peaks).
     unsigned long merges;
+    // Most maxima in one frame, frames with more maxima than the table holds (the weakest are dropped), and frames whose quiet nodes
+    // moved the reference.
+    unsigned long peaks_max, peak_overflows, reference_frames;
     // Fingers that went unseen and came back within NVT_HOLD_FRAMES, fingers lifted per miss reason, and frames by type (2 / 4).
     unsigned long holds_bridged, ends[NVT_MISS_KINDS], frames_by_type[2];
     struct nvt_slot slots[NVT_SLOTS];

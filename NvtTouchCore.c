@@ -130,10 +130,23 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
     ++core->frames_by_type[frame_type==4];
     int *delta=core->delta;
     for (int i=0;i<NVT_NODES;++i) delta[i]=delta_at(matrix,core->reference,i);
+    // Slow reference drift: in a frame without a finger the quiet nodes move the reference a step towards their value (NvtTouchCore.h).
+    {
+        int touched=0;
+        for (int i=0;i<NVT_NODES && !touched;++i) touched=delta[i]>=NVT_PEAK_THRESHOLD;
+        if (!touched) {
+            for (int i=0;i<NVT_NODES;++i) {
+                const int step=delta[i]/NVT_REFERENCE_RATE;
+                core->reference[i]=(int16_t)(core->reference[i]+(step ? step : delta[i]>0 ? 1 : delta[i]<0 ? -1 : 0));
+            }
+            ++core->reference_frames;
+        }
+    }
 
     // Steepest-ascent labelling: every node above the noise floor flows to the local maximum above it.
     int *label=core->label;
-    struct peak peaks[MAX_PEAKS];int npeaks=0;
+    struct peak peaks[MAX_PEAKS];int npeaks=0,overflow=0;
+    int replaced[MAX_PEAKS];
     for (int i=0;i<NVT_NODES;++i) label[i]=-1;
     for (int i=0;i<NVT_NODES;++i) {
         if (delta[i] < NVT_NOISE_THRESHOLD) continue;
@@ -150,15 +163,27 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
             if (best==cur) break;
             cur=best;
         }
-        // cur is a local maximum; register it as a peak the first time we see it.
+        // cur is a local maximum; register it as a peak the first time we see it. A full table drops its weakest maximum for a
+        // stronger one (the nodes already labelled with it are cleared below), so a finger is never lost to a crowd of faint maxima.
         int found=-1;
         for (int p=0;p<npeaks;++p) if (peaks[p].index==cur) {found=p;break;}
         if (found<0) {
-            if (npeaks==MAX_PEAKS) continue;
-            peaks[npeaks].index=cur;peaks[npeaks].value=delta[cur];found=npeaks++;
+            if (npeaks==MAX_PEAKS) {
+                overflow=1;
+                int weakest=0;
+                for (int p=1;p<npeaks;++p) if (peaks[p].value<peaks[weakest].value) weakest=p;
+                if (peaks[weakest].value>=delta[cur]) continue;
+                peaks[weakest].index=cur;peaks[weakest].value=delta[cur];++replaced[weakest];found=weakest;
+            } else {
+                replaced[npeaks]=0;peaks[npeaks].index=cur;peaks[npeaks].value=delta[cur];found=npeaks++;
+            }
         }
-        label[i]=found;
+        label[i]=found | replaced[found]<<8;
     }
+    if (overflow) ++core->peak_overflows;
+    if ((unsigned long)npeaks>core->peaks_max) core->peaks_max=(unsigned long)npeaks;
+    // A label names its peak and the peak's generation: nodes that flowed to a dropped maximum belong to nothing.
+    for (int i=0;i<NVT_NODES;++i) if (label[i]>=0) label[i]=(label[i]>>8)==replaced[label[i]&0xff] ? (label[i]&0xff) : -1;
     // One finger can show two maxima a node or two apart (a ridge across it). Left as two blobs, the finger's centroid jumps by half a
     // node whenever the ridge moves; a peak with a stronger one within NVT_MERGE_SPAN nodes is folded into it.
     int into[MAX_PEAKS];
