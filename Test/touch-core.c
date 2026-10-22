@@ -172,6 +172,30 @@ int main(void){
     for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0,30.0,900,1.3);feed(f,c,12);}
     for(int k=0;k<=NVT_HOLD_FRAMES;++k){base_frame(f,2);blob(f,20.0,30.0,900,6.0);n=feed(f,c,12);}
     assert(n==0&&core.ends[NVT_MISS_PALM]==1);
-    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, adaptive smoothing, lift freeze, hold, split peaks; synthetic frames, no hardware");
+    // Thirty faint maxima above the noise floor (more than the peak table holds) in the rows before two fingers: both fingers are found.
+    settle();
+    for(int frame=0;frame<3;++frame){
+        base_frame(f,2);
+        for(int k=0;k<30;++k)blob(f,2.0+(k/10)*4,3.0+(k%10)*5,160,0.5);
+        blob(f,30.0,15.0,900,1.3);blob(f,34.0,45.0,900,1.3);n=feed(f,c,12);
+    }
+    assert(n==2&&core.peak_overflows>0&&core.peaks_max>=24);
+    // A panel whose raw values drift up by 400 over a few thousand frames keeps no maxima: the reference follows (int-274), and a
+    // finger is still found afterwards.
+    settle();
+    for(int frame=0;frame<4000;++frame){
+        base_frame(f,2);for(int i=0;i<NVT_NODES;++i)f[i]=(int16_t)(f[i]+frame/10+((i*13)%17==0 ? frame/20 : 0));
+        n=feed(f,c,12);assert(n==0);
+    }
+    {
+        const unsigned long before=core.peaks_max;
+        base_frame(f,2);for(int i=0;i<NVT_NODES;++i)f[i]=(int16_t)(f[i]+400+((i*13)%17==0 ? 200 : 0));n=feed(f,c,12);
+        assert(n==0&&core.reference_frames>3000);(void)before;
+        core.peaks_max=0;
+        for(int frame=0;frame<3;++frame){base_frame(f,2);for(int i=0;i<NVT_NODES;++i)f[i]=(int16_t)(f[i]+400+((i*13)%17==0 ? 200 : 0));
+            blob(f,20.0,30.0,900,1.3);n=feed(f,c,12);}
+        assert(n==1&&core.peaks_max<=2);
+    }
+    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, adaptive smoothing, lift freeze, hold, split peaks, peak table overflow, reference drift; synthetic frames, no hardware");
     return 0;
 }
