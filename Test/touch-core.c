@@ -196,6 +196,35 @@ int main(void){
             blob(f,20.0,30.0,900,1.3);n=feed(f,c,12);}
         assert(n==1&&core.peaks_max<=2);
     }
-    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, adaptive smoothing, lift freeze, hold, split peaks, peak table overflow, reference drift; synthetic frames, no hardware");
+    // A swipe up from the bottom edge that speeds up to five nodes a frame (about 300 mm/s more than the tracking radius allows from
+    // the last position) keeps its finger: tracking looks where the finger is heading (int-275: 13 of 125 strokes ended "far").
+    settle();
+    {
+        double row=38.0;int id=-1;
+        for(int frame=0;frame<9;++frame){
+            base_frame(f,2);blob(f,row,30.0,900,1.3);n=feed(f,c,12);
+            if(frame>=1){assert(n==1);if(id<0)id=c[0].tracking_id;assert(c[0].tracking_id==id);}
+            row-=frame<5 ? frame+1.0 : 5.0;
+            if(row<2.0)break;
+        }
+        assert(core.ends[NVT_MISS_FAR]==0);
+    }
+    lift();
+    // Two fingers four nodes apart sliding sideways by two nodes a frame keep their identifiers: the closest pair is matched first, so
+    // the leading finger's slot does not take the trailing finger's blob.
+    settle();
+    {
+        int left_id=-1,right_id=-1;
+        for(int frame=0;frame<12;++frame){
+            base_frame(f,2);blob(f,20.0,10.0+frame*2.0,900,1.3);blob(f,20.0,14.0+frame*2.0,900,1.3);n=feed(f,c,12);
+            if(frame<1)continue;
+            assert(n==2);
+            const int l=c[0].x<c[1].x ? 0 : 1;
+            if(left_id<0){left_id=c[l].tracking_id;right_id=c[1-l].tracking_id;}
+            assert(c[l].tracking_id==left_id&&c[1-l].tracking_id==right_id);
+        }
+        assert(core.ends[NVT_MISS_TAKEN]==0&&core.ends[NVT_MISS_FAR]==0);
+    }
+    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, adaptive smoothing, lift freeze, hold, split peaks, peak table overflow, reference drift, fast edge swipe, close fingers; synthetic frames, no hardware");
     return 0;
 }

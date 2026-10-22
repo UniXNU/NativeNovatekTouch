@@ -58,6 +58,7 @@ struct nvt_slot {
     int rx, ry;      // the position last reported, after the filter (x, y stay raw: tracking uses them)
     long fx, fy;     // the filtered position, in 1/16 coordinate units
     long vx, vy;     // the smoothed speed, coordinate units per second
+    int dx, dy;      // the last raw step per frame: tracking looks for the blob where the finger is heading
     int missed;      // consecutive frames without a matching blob (held while <= NVT_HOLD_FRAMES)
     int miss_reason; // why the first of those frames had no match (NVT_MISS_*)
 };
