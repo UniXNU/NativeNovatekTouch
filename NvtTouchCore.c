@@ -95,6 +95,55 @@ static int miss_reason(const struct nvt_slot *slot, const struct nvt_contact *fo
     return reason;
 }
 
+// The cost of giving a finger blob j (j >= nfound: no blob): the squared distance from where the finger is heading, the radius
+// squared for no blob, more than that for a blob out of reach or too weak to keep a finger.
+static long track_cost(const struct nvt_slot *slot, const struct nvt_contact *found, int nfound, int j) {
+    const long r2=(long)TRACK_RADIUS*TRACK_RADIUS;
+    if (j>=nfound) return r2;
+    if (found[j].peak<NVT_UP_THRESHOLD) return 4*r2;
+    const long px=slot->x+(long)slot->dx*(slot->missed+1),py=slot->y+(long)slot->dy*(slot->missed+1);
+    const long dx=found[j].x-px,dy=found[j].y-py,d=dx*dx+dy*dy;
+    return d<=r2 ? d : 4*r2;
+}
+
+// Least-cost assignment of the active fingers (rows) to the blobs plus one "no blob" column per finger (Hungarian method with
+// potentials, O(rows^2 * columns)); match[slot] gets the blob or -1.
+static void assign_tracks(const struct nvt_touch_core *core, const struct nvt_contact *found, int nfound, int *match) {
+    enum {COLUMNS=MAX_PEAKS+NVT_SLOTS};
+    int rows[NVT_SLOTS+1],n=0;
+    for (int s=0;s<NVT_SLOTS;++s) {match[s]=-1;if (core->slots[s].active) rows[++n]=s;}
+    if (!n) return;
+    const int m=nfound+n;
+    long u[NVT_SLOTS+1]={0},v[COLUMNS+1]={0},minv[COLUMNS+1];
+    int p[COLUMNS+1]={0},way[COLUMNS+1]={0};char used[COLUMNS+1];
+    for (int i=1;i<=n;++i) {
+        p[0]=i;int j0=0;
+        for (int j=0;j<=m;++j) {minv[j]=__LONG_MAX__;used[j]=0;}
+        do {
+            used[j0]=1;
+            const int i0=p[j0];long delta=__LONG_MAX__;int j1=0;
+            for (int j=1;j<=m;++j) {
+                if (used[j]) continue;
+                const long cur=track_cost(&core->slots[rows[i0]],found,nfound,j-1)-u[i0]-v[j];
+                if (cur<minv[j]) {minv[j]=cur;way[j]=j0;}
+                if (minv[j]<delta) {delta=minv[j];j1=j;}
+            }
+            for (int j=0;j<=m;++j) {
+                if (used[j]) {u[p[j]]+=delta;v[j]-=delta;}
+                else minv[j]-=delta;
+            }
+            j0=j1;
+        } while (p[j0]);
+        do {const int j1=way[j0];p[j0]=p[j1];j0=j1;} while (j0);
+    }
+    const long r2=(long)TRACK_RADIUS*TRACK_RADIUS;
+    for (int j=1;j<=nfound;++j) {
+        if (!p[j]) continue;
+        const int s=rows[p[j]];
+        if (track_cost(&core->slots[s],found,nfound,j-1)<=r2) match[s]=j-1;
+    }
+}
+
 static void sort_i16(int16_t *v, unsigned n) {
     for (unsigned i=1;i<n;++i) {int16_t x=v[i];unsigned j=i;while(j>0 && v[j-1]>x){v[j]=v[j-1];--j;}v[j]=x;}
 }
@@ -231,18 +280,17 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         found[nfound].slot=-1;found[nfound].tracking_id=0;found[nfound].x=x;found[nfound].y=y;
         found[nfound].peak=b->peak;found[nfound].area=b->area;found[nfound].weight=(int)b->sum_w;++nfound;
     }
-    // Track: greedy nearest assignment within TRACK_RADIUS, keeping contacts above the up threshold.
-    int used_contact[MAX_PEAKS]={0};
+    // Track: the assignment of blobs (above the up threshold, within TRACK_RADIUS of each finger's predicted position) to fingers with
+    // the least total squared distance; a finger may also take no blob, at the cost of the radius. Matching slot by slot let a finger
+    // take its neighbour's blob (int-275: 5 strokes ended "taken"), and so does taking the closest pair first when two fingers move
+    // together; measuring from the last position instead of the predicted one ended fast swipes (13 of 125 strokes ended "far").
+    int used_contact[MAX_PEAKS]={0},match[NVT_SLOTS];
+    assign_tracks(core,found,nfound,match);
+    for (int s=0;s<NVT_SLOTS;++s) if (match[s]>=0) used_contact[match[s]]=1;
     for (int s=0;s<NVT_SLOTS;++s) {
         struct nvt_slot *slot=&core->slots[s];
         if (!slot->active) continue;
-        int best=-1;long bd=0;
-        for (int c=0;c<nfound;++c) {
-            if (used_contact[c] || found[c].peak<NVT_UP_THRESHOLD) continue;
-            long dx=found[c].x-slot->x,dy=found[c].y-slot->y,d=dx*dx+dy*dy;
-            if (d>(long)TRACK_RADIUS*TRACK_RADIUS) continue;
-            if (best<0||d<bd){best=c;bd=d;}
-        }
+        const int best=match[s];
         if (best<0) {
             // A finger is not lifted by one frame without it (int-269: every stroke ended after 60..130 ms, so a swipe never paused
             // and the app switcher never opened); it is held where it was for up to NVT_HOLD_FRAMES frames.
@@ -250,9 +298,10 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
             if (++slot->missed<=NVT_HOLD_FRAMES) continue;
             ++core->ends[slot->miss_reason];slot->active=0;continue;
         }
-        if (slot->missed) {++core->holds_bridged;slot->missed=0;}
-        used_contact[best]=1;found[best].slot=s;found[best].tracking_id=slot->tracking_id;
         const int dx=found[best].x-slot->x,dy=found[best].y-slot->y,ax=dx<0?-dx:dx,ay=dy<0?-dy:dy;
+        slot->dx=dx/(slot->missed+1);slot->dy=dy/(slot->missed+1);
+        if (slot->missed) {++core->holds_bridged;slot->missed=0;}
+        found[best].slot=s;found[best].tracking_id=slot->tracking_id;
         const int px=slot->rx,py=slot->ry;
         slot->x=found[best].x;slot->y=found[best].y;++slot->age;
         follow(slot,found[best].x,found[best].y,found[best].peak<NVT_DOWN_THRESHOLD);
@@ -274,6 +323,7 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
             core->slots[s].x=found[c].x;core->slots[s].y=found[c].y;
             core->slots[s].rx=found[c].x;core->slots[s].ry=found[c].y;
             core->slots[s].fx=(long)found[c].x*16;core->slots[s].fy=(long)found[c].y*16;core->slots[s].vx=core->slots[s].vy=0;
+            core->slots[s].dx=core->slots[s].dy=0;
             found[c].slot=s;found[c].tracking_id=core->slots[s].tracking_id;used_contact[c]=1;break;
         }
     }
