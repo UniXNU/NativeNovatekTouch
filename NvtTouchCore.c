@@ -57,16 +57,26 @@ static int free_tracking_id(const struct nvt_touch_core *core) {
     return NVT_SLOTS;
 }
 
-// One axis of the fuzz filter, the scheme Linux input devices use for noisy absolute axes: a step within half the fuzz is noise and
-// keeps the reported value, steps up to twice the fuzz are blended in, larger ones pass. A resting finger then reports the same
-// position every frame (iPadOS opens the app switcher only when the swipe's velocity falls to near zero), while a moving finger is
-// followed with at most a fuzz-sized lag.
-static int defuzz(int reported, int raw) {
-    const int d = raw - reported, a = d < 0 ? -d : d;
-    if (a < NVT_FUZZ / 2) return reported;
-    if (a < NVT_FUZZ) return (reported * 3 + raw) / 4;
-    if (a < NVT_FUZZ * 2) return (reported + raw) / 2;
-    return raw;
+// The reported position of a tracked finger for its raw one: a resting finger stays locked until it is NVT_UNLOCK away (it then jumps to
+// where it is), a moving one is followed and locks again once its last NVT_REST_FRAMES raw positions span less than NVT_REST_SPAN.
+// A frame whose blob is below the down threshold (a finger lifting off, or barely touching) moves nothing: its centroid is the least
+// reliable, and the last frames before a lift otherwise give the lift-off a velocity it did not have.
+static void follow(struct nvt_touch_core *core, struct nvt_slot *slot, int x, int y, int weak) {
+    if (weak) return;
+    slot->hx[slot->hn % NVT_REST_FRAMES]=x;slot->hy[slot->hn % NVT_REST_FRAMES]=y;++slot->hn;
+    if (!slot->moving) {
+        const int dx=x-slot->rx,dy=y-slot->ry;
+        if (dx>NVT_UNLOCK || dx<-NVT_UNLOCK || dy>NVT_UNLOCK || dy<-NVT_UNLOCK) {slot->moving=1;slot->rx=x;slot->ry=y;++core->unlocks;}
+        return;
+    }
+    slot->rx=x;slot->ry=y;
+    if (slot->hn<NVT_REST_FRAMES) return;
+    int lx=x,hx=x,ly=y,hy=y;
+    for (int k=0;k<NVT_REST_FRAMES;++k) {
+        if (slot->hx[k]<lx) lx=slot->hx[k]; if (slot->hx[k]>hx) hx=slot->hx[k];
+        if (slot->hy[k]<ly) ly=slot->hy[k]; if (slot->hy[k]>hy) hy=slot->hy[k];
+    }
+    if (hx-lx<NVT_REST_SPAN && hy-ly<NVT_REST_SPAN) {slot->moving=0;slot->rx=(lx+hx)/2;slot->ry=(ly+hy)/2;++core->rests;}
 }
 
 // The reason a tracked finger at (x, y) matched none of this frame's blobs, judged by the nearest blob of any kind.
@@ -155,7 +165,8 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
     for (int i=0;i<NVT_NODES;++i) {
         if (label[i]<0) continue;
         struct blob *b=&blobs[label[i]];
-        int w=delta[i]-NVT_COORDINATE_REDUCE;if (w<0) w=0;
+        int floor=peaks[label[i]].value*NVT_CENTROID_FLOOR/100;if (floor<NVT_COORDINATE_REDUCE) floor=NVT_COORDINATE_REDUCE;
+        int w=delta[i]-floor;if (w<0) w=0;
         b->sum_w+=w;b->sum_row+=(long)w*kRowMap[i/NVT_COLUMNS]*NVT_SUPER_RESOLUTION;
         b->sum_col+=(long)w*kColumnMap[i%NVT_COLUMNS]*NVT_SUPER_RESOLUTION;++b->area;
     }
@@ -205,7 +216,7 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
             }
         }
         slot->x=found[best].x;slot->y=found[best].y;++slot->age;
-        slot->rx=defuzz(slot->rx,found[best].x);slot->ry=defuzz(slot->ry,found[best].y);
+        follow(core,slot,found[best].x,found[best].y,found[best].peak<NVT_DOWN_THRESHOLD);
         found[best].x=slot->rx;found[best].y=slot->ry;
     }
     for (int c=0;c<nfound;++c) {
@@ -213,6 +224,7 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         for (int s=0;s<NVT_SLOTS;++s) {
             if (core->slots[s].active) continue;
             core->slots[s].active=1;core->slots[s].tracking_id=free_tracking_id(core);core->slots[s].age=1;core->slots[s].missed=0;
+            core->slots[s].moving=0;core->slots[s].hn=0;
             core->slots[s].x=found[c].x;core->slots[s].y=found[c].y;
             core->slots[s].rx=found[c].x;core->slots[s].ry=found[c].y;
             found[c].slot=s;found[c].tracking_id=core->slots[s].tracking_id;used_contact[c]=1;break;

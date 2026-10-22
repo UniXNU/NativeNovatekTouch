@@ -102,21 +102,35 @@ int main(void){
         lift();
     }
     assert(top>=1&&top<=NVT_SLOTS);
-    // A resting finger whose centroid wanders by a fraction of a node reports one position (the fuzz filter); a moving one is followed.
+    // A resting finger whose centroid wanders by up to 0.15 node (8 px, the noise int-271 measured) reports one position; a
+    // moving one is followed exactly, and locks again where it stops.
     settle();
     int rest_x=-1,rest_y=-1;
     for(int frame=0;frame<40;++frame){
-        base_frame(f,2);blob(f,20.0+0.01*(frame%3),30.0+0.01*((frame*7)%5),900,1.3);n=feed(f,c,12);
+        base_frame(f,2);blob(f,20.0+0.15*((frame%3)-1),30.0+0.1*(((frame*7)%5)-2),900,1.3);n=feed(f,c,12);
         if(frame<2)continue;
         assert(n==1);
         if(rest_x<0){rest_x=c[0].x;rest_y=c[0].y;}
         assert(c[0].x==rest_x&&c[0].y==rest_y);
     }
-    assert(core.jitter_frames>0);
+    assert(core.jitter_frames>0&&core.unlocks==0);
     for(int frame=0;frame<20;++frame){base_frame(f,2);blob(f,20.0,30.0+frame*0.5,900,1.3);n=feed(f,c,12);assert(n==1);}
-    {   // the last blob sits between columns 39 and 40: the reported position follows it to within the filter's lag
+    {   // the last blob sits between columns 39 and 40: the reported position is the raw one
         const int target=(nvt_touch_column_center(39)+nvt_touch_column_center(40))*NVT_SUPER_RESOLUTION/2;
-        assert(c[0].x>rest_x+1000&&abs(c[0].x-target)<2*NVT_FUZZ+120);
+        assert(core.unlocks==1&&c[0].x>rest_x+1000&&abs(c[0].x-target)<120);
+    }
+    {   // it stops there: locked within NVT_REST_FRAMES frames, and the position holds through the noise
+        int locked_x=-1;
+        for(int frame=0;frame<30;++frame){
+            base_frame(f,2);blob(f,20.0+0.15*((frame%3)-1),39.5+0.15*((frame%2)*2-1),900,1.3);n=feed(f,c,12);assert(n==1);
+            if(frame<NVT_REST_FRAMES+1)continue;
+            if(locked_x<0)locked_x=c[0].x;
+            assert(c[0].x==locked_x);
+        }
+        assert(core.rests>=1);
+        // lifting off: the blob fades below the down threshold and slides; the reported position does not follow
+        for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0+frame*0.4,39.5+frame*0.6,250-frame*10,1.3);n=feed(f,c,12);
+            assert(n==1&&c[0].x==locked_x);}
     }
     // A finger missing for up to NVT_HOLD_FRAMES frames is held where it was, with its id, and continues when it reappears; one missing
     // longer is lifted, and the reason (no blob at all) is counted.
@@ -138,6 +152,6 @@ int main(void){
     for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0,30.0,900,1.3);feed(f,c,12);}
     for(int k=0;k<=NVT_HOLD_FRAMES;++k){base_frame(f,2);blob(f,20.0,30.0,900,6.0);n=feed(f,c,12);}
     assert(n==0&&core.ends[NVT_MISS_PALM]==1);
-    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, fuzz, hold; synthetic frames, no hardware");
+    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, rest lock, lift freeze, hold; synthetic frames, no hardware");
     return 0;
 }
