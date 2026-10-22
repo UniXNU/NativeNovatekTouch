@@ -25,6 +25,12 @@ static void settle(void){
     assert(core.have_reference);
 }
 static int feed(int16_t *m,struct nvt_contact *out,int max){return nvt_touch_process(&core,m,4,out,max);}
+// A lift: the finger is held for NVT_HOLD_FRAMES empty frames, then gone.
+static void lift(void){
+    int16_t m[NVT_NODES];struct nvt_contact out[12];
+    for(int k=0;k<NVT_HOLD_FRAMES;++k){base_frame(m,2);(void)feed(m,out,12);}
+    base_frame(m,2);assert(feed(m,out,12)==0);
+}
 
 int main(void){
     // Startup baseline: -1 for 72 frames, then a quiet frame yields no contacts.
@@ -49,7 +55,7 @@ int main(void){
     int lo=nvt_touch_column_center(30)*NVT_SUPER_RESOLUTION,hi=nvt_touch_column_center(31)*NVT_SUPER_RESOLUTION;
     assert(c[0].x>lo+100&&c[0].x<hi-100&&c[0].tracking_id==id);
     // Lift, then a new touch is a new contact (not reported on its first frame).
-    base_frame(f,2);assert(feed(f,c,12)==0);
+    lift();
     base_frame(f,2);blob(f,10.0,10.0,900,1.3);assert(feed(f,c,12)==0);
     base_frame(f,2);blob(f,10.0,10.0,900,1.3);assert(feed(f,c,12)==1&&c[0].tracking_id!=id);
     // Two fingers far apart: two contacts, distinct ids and slots.
@@ -93,7 +99,7 @@ int main(void){
             base_frame(f,2);blob(f,10.0+(stroke%5)*5,10.0+(stroke%7)*5,900,1.3);n=feed(f,c,12);
             for(int k=0;k<n;++k)if(c[k].tracking_id>top)top=c[k].tracking_id;
         }
-        base_frame(f,2);assert(feed(f,c,12)==0);
+        lift();
     }
     assert(top>=1&&top<=NVT_SLOTS);
     // A resting finger whose centroid wanders by a fraction of a node reports one position (the fuzz filter); a moving one is followed.
@@ -112,6 +118,26 @@ int main(void){
         const int target=(nvt_touch_column_center(39)+nvt_touch_column_center(40))*NVT_SUPER_RESOLUTION/2;
         assert(c[0].x>rest_x+1000&&abs(c[0].x-target)<2*NVT_FUZZ+120);
     }
-    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, fuzz; synthetic frames, no hardware");
+    // A finger missing for up to NVT_HOLD_FRAMES frames is held where it was, with its id, and continues when it reappears; one missing
+    // longer is lifted, and the reason (no blob at all) is counted.
+    settle();
+    for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0,30.0,900,1.3);n=feed(f,c,12);}
+    assert(n==1);
+    {
+        const struct nvt_contact before=c[0];
+        for(int k=0;k<NVT_HOLD_FRAMES;++k){
+            base_frame(f,2);n=feed(f,c,12);
+            assert(n==1&&c[0].tracking_id==before.tracking_id&&c[0].x==before.x&&c[0].y==before.y);
+        }
+        base_frame(f,2);blob(f,20.0,30.0,900,1.3);n=feed(f,c,12);
+        assert(n==1&&c[0].tracking_id==before.tracking_id&&core.holds_bridged==1);
+        lift();
+        assert(core.ends[NVT_MISS_NONE]==1);
+    }
+    // A finger whose blob turns palm-sized is held, then lifted with the palm reason.
+    for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0,30.0,900,1.3);feed(f,c,12);}
+    for(int k=0;k<=NVT_HOLD_FRAMES;++k){base_frame(f,2);blob(f,20.0,30.0,900,6.0);n=feed(f,c,12);}
+    assert(n==0&&core.ends[NVT_MISS_PALM]==1);
+    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, fuzz, hold; synthetic frames, no hardware");
     return 0;
 }

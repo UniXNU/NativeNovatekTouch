@@ -69,6 +69,23 @@ static int defuzz(int reported, int raw) {
     return raw;
 }
 
+// The reason a tracked finger at (x, y) matched none of this frame's blobs, judged by the nearest blob of any kind.
+static int miss_reason(const struct nvt_slot *slot, const struct nvt_contact *found, const int *used, int nfound,
+                       const int (*palms)[2], int npalms) {
+    long best=-1;int reason=NVT_MISS_NONE;
+    for (int c=0;c<nfound;++c) {
+        const long dx=found[c].x-slot->x,dy=found[c].y-slot->y,d=dx*dx+dy*dy;
+        if (best>=0 && d>=best) continue;
+        best=d;reason=used[c] ? NVT_MISS_TAKEN : found[c].peak<NVT_UP_THRESHOLD ? NVT_MISS_WEAK : NVT_MISS_FAR;
+    }
+    for (int p=0;p<npalms;++p) {
+        const long dx=palms[p][0]-slot->x,dy=palms[p][1]-slot->y,d=dx*dx+dy*dy;
+        if (best<0 || d<best) {best=d;reason=NVT_MISS_PALM;}
+    }
+    if (best>(long)TRACK_RADIUS*TRACK_RADIUS && reason!=NVT_MISS_NONE) reason=NVT_MISS_FAR;
+    return reason;
+}
+
 static void sort_i16(int16_t *v, unsigned n) {
     for (unsigned i=1;i<n;++i) {int16_t x=v[i];unsigned j=i;while(j>0 && v[j-1]>x){v[j]=v[j-1];--j;}v[j]=x;}
 }
@@ -101,6 +118,7 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         form_reference(core);
         return -1;
     }
+    ++core->frames_by_type[frame_type==4];
     int *delta=core->delta;
     for (int i=0;i<NVT_NODES;++i) delta[i]=delta_at(matrix,core->reference,i);
 
@@ -142,9 +160,10 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         b->sum_col+=(long)w*kColumnMap[i%NVT_COLUMNS]*NVT_SUPER_RESOLUTION;++b->area;
     }
     struct nvt_contact found[MAX_PEAKS];int nfound=0;
+    int palms[MAX_PEAKS][2];int npalms=0;
     for (int p=0;p<npeaks;++p) {
         struct blob *b=&blobs[p];
-        if (!b->sum_w || b->area>=NVT_PALM_MIN_NODES) continue;   // large blobs: palm-sized, not reported
+        if (!b->sum_w) continue;
         // Starting a contact needs the down threshold, keeping one only the up threshold.
         int x=(int)((b->sum_col + b->sum_w/2) / b->sum_w);
         int y=(int)((b->sum_row + b->sum_w/2) / b->sum_w);
@@ -152,6 +171,7 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         if (y<0) y=0; if (y>NVT_SHORT_AXIS_MAX-1) y=NVT_SHORT_AXIS_MAX-1;
         x=nvt_touch_map_edge_axis(x,NVT_LONG_AXIS_MAX,0);
         y=nvt_touch_map_edge_axis(y,NVT_SHORT_AXIS_MAX,1);
+        if (b->area>=NVT_PALM_MIN_NODES) {palms[npalms][0]=x;palms[npalms][1]=y;++npalms;continue;}   // palm-sized, not reported
         found[nfound].slot=-1;found[nfound].tracking_id=0;found[nfound].x=x;found[nfound].y=y;
         found[nfound].peak=b->peak;found[nfound].area=b->area;found[nfound].weight=(int)b->sum_w;++nfound;
     }
@@ -167,7 +187,14 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
             if (d>(long)TRACK_RADIUS*TRACK_RADIUS) continue;
             if (best<0||d<bd){best=c;bd=d;}
         }
-        if (best<0) {slot->active=0;continue;}
+        if (best<0) {
+            // A finger is not lifted by one frame without it (int-269: every stroke ended after 60..130 ms, so a swipe never paused
+            // and the app switcher never opened); it is held where it was for up to NVT_HOLD_FRAMES frames.
+            if (!slot->missed) slot->miss_reason=miss_reason(slot,found,used_contact,nfound,(const int (*)[2])palms,npalms);
+            if (++slot->missed<=NVT_HOLD_FRAMES) continue;
+            ++core->ends[slot->miss_reason];slot->active=0;continue;
+        }
+        if (slot->missed) {++core->holds_bridged;slot->missed=0;}
         used_contact[best]=1;found[best].slot=s;found[best].tracking_id=slot->tracking_id;
         {
             const int dx=found[best].x-slot->x,dy=found[best].y-slot->y,ax=dx<0?-dx:dx,ay=dy<0?-dy:dy;
@@ -185,7 +212,7 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         if (used_contact[c] || found[c].peak<NVT_DOWN_THRESHOLD) continue;
         for (int s=0;s<NVT_SLOTS;++s) {
             if (core->slots[s].active) continue;
-            core->slots[s].active=1;core->slots[s].tracking_id=free_tracking_id(core);core->slots[s].age=1;
+            core->slots[s].active=1;core->slots[s].tracking_id=free_tracking_id(core);core->slots[s].age=1;core->slots[s].missed=0;
             core->slots[s].x=found[c].x;core->slots[s].y=found[c].y;
             core->slots[s].rx=found[c].x;core->slots[s].ry=found[c].y;
             found[c].slot=s;found[c].tracking_id=core->slots[s].tracking_id;used_contact[c]=1;break;
@@ -195,6 +222,12 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
     for (int c=0;c<nfound && count<max;++c) {
         if (found[c].slot<0 || core->slots[found[c].slot].age<2) continue;   // report from the second frame on
         out[count++]=found[c];
+    }
+    for (int s=0;s<NVT_SLOTS && count<max;++s) {   // held fingers, where they were last reported
+        const struct nvt_slot *slot=&core->slots[s];
+        if (!slot->active || !slot->missed || slot->age<2) continue;
+        out[count].slot=s;out[count].tracking_id=slot->tracking_id;out[count].x=slot->rx;out[count].y=slot->ry;
+        out[count].peak=out[count].area=out[count].weight=0;++count;
     }
     return count;
 }

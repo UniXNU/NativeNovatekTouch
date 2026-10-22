@@ -12,6 +12,8 @@
 #define NVT_SUPER_RESOLUTION 10
 // Positional noise the fuzz filter absorbs, in coordinate units (0.1 panel px): 60 is 6 px, about 0.5 mm.
 #define NVT_FUZZ 60
+// Frames a tracked finger may go unseen before it counts as lifted (8.3 ms each at 120 Hz). The finger is reported where it was meanwhile.
+#define NVT_HOLD_FRAMES 3
 #define NVT_SLOTS 12
 #define NVT_STARTUP_FRAMES 72
 // Output axes (short axis follows rows, long axis follows columns), before any display orientation.
@@ -34,7 +36,13 @@ struct nvt_contact {
 struct nvt_slot {
     int active, tracking_id, age, x, y;
     int rx, ry;      // the position last reported, after the fuzz filter (x, y stay raw: tracking uses them)
+    int missed;      // consecutive frames without a matching blob (held while <= NVT_HOLD_FRAMES)
+    int miss_reason; // why the first of those frames had no match (NVT_MISS_*)
 };
+
+// Why a tracked finger found no blob: none at all, the nearest beyond the tracking radius, below the up threshold, palm-sized, or already
+// taken by another finger.
+enum {NVT_MISS_NONE, NVT_MISS_FAR, NVT_MISS_WEAK, NVT_MISS_PALM, NVT_MISS_TAKEN, NVT_MISS_KINDS};
 
 struct nvt_touch_core {
     int16_t reference[NVT_NODES];
@@ -45,6 +53,8 @@ struct nvt_touch_core {
     // and largest step per axis, in coordinate units. The size of this noise is what NVT_FUZZ has to cover.
     unsigned long jitter_frames, jitter_sum;
     int jitter_max;
+    // Fingers that went unseen and came back within NVT_HOLD_FRAMES, fingers lifted per miss reason, and frames by type (2 / 4).
+    unsigned long holds_bridged, ends[NVT_MISS_KINDS], frames_by_type[2];
     struct nvt_slot slots[NVT_SLOTS];
     // Scratch for nvt_touch_process: 19 KB, kept here because kernel threads have 16 KiB stacks (a stack probe in the
     // function prologue faulted on hardware when these were locals).
