@@ -57,6 +57,18 @@ static int free_tracking_id(const struct nvt_touch_core *core) {
     return NVT_SLOTS;
 }
 
+// One axis of the fuzz filter, the scheme Linux input devices use for noisy absolute axes: a step within half the fuzz is noise and
+// keeps the reported value, steps up to twice the fuzz are blended in, larger ones pass. A resting finger then reports the same
+// position every frame (iPadOS opens the app switcher only when the swipe's velocity falls to near zero), while a moving finger is
+// followed with at most a fuzz-sized lag.
+static int defuzz(int reported, int raw) {
+    const int d = raw - reported, a = d < 0 ? -d : d;
+    if (a < NVT_FUZZ / 2) return reported;
+    if (a < NVT_FUZZ) return (reported * 3 + raw) / 4;
+    if (a < NVT_FUZZ * 2) return (reported + raw) / 2;
+    return raw;
+}
+
 static void sort_i16(int16_t *v, unsigned n) {
     for (unsigned i=1;i<n;++i) {int16_t x=v[i];unsigned j=i;while(j>0 && v[j-1]>x){v[j]=v[j-1];--j;}v[j]=x;}
 }
@@ -157,7 +169,17 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         }
         if (best<0) {slot->active=0;continue;}
         used_contact[best]=1;found[best].slot=s;found[best].tracking_id=slot->tracking_id;
+        {
+            const int dx=found[best].x-slot->x,dy=found[best].y-slot->y,ax=dx<0?-dx:dx,ay=dy<0?-dy:dy;
+            if (ax<4*NVT_FUZZ && ay<4*NVT_FUZZ) {
+                ++core->jitter_frames;core->jitter_sum+=(unsigned long)(ax+ay);
+                if (ax>core->jitter_max) core->jitter_max=ax;
+                if (ay>core->jitter_max) core->jitter_max=ay;
+            }
+        }
         slot->x=found[best].x;slot->y=found[best].y;++slot->age;
+        slot->rx=defuzz(slot->rx,found[best].x);slot->ry=defuzz(slot->ry,found[best].y);
+        found[best].x=slot->rx;found[best].y=slot->ry;
     }
     for (int c=0;c<nfound;++c) {
         if (used_contact[c] || found[c].peak<NVT_DOWN_THRESHOLD) continue;
@@ -165,6 +187,7 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
             if (core->slots[s].active) continue;
             core->slots[s].active=1;core->slots[s].tracking_id=free_tracking_id(core);core->slots[s].age=1;
             core->slots[s].x=found[c].x;core->slots[s].y=found[c].y;
+            core->slots[s].rx=found[c].x;core->slots[s].ry=found[c].y;
             found[c].slot=s;found[c].tracking_id=core->slots[s].tracking_id;used_contact[c]=1;break;
         }
     }

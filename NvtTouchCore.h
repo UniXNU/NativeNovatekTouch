@@ -10,6 +10,8 @@
 #define NVT_COLUMNS 60
 #define NVT_NODES (NVT_ROWS*NVT_COLUMNS)
 #define NVT_SUPER_RESOLUTION 10
+// Positional noise the fuzz filter absorbs, in coordinate units (0.1 panel px): 60 is 6 px, about 0.5 mm.
+#define NVT_FUZZ 60
 #define NVT_SLOTS 12
 #define NVT_STARTUP_FRAMES 72
 // Output axes (short axis follows rows, long axis follows columns), before any display orientation.
@@ -31,6 +33,7 @@ struct nvt_contact {
 
 struct nvt_slot {
     int active, tracking_id, age, x, y;
+    int rx, ry;      // the position last reported, after the fuzz filter (x, y stay raw: tracking uses them)
 };
 
 struct nvt_touch_core {
@@ -38,6 +41,10 @@ struct nvt_touch_core {
     int have_reference;
     unsigned startup_count;
     int16_t startup[NVT_STARTUP_FRAMES][NVT_NODES];   // collected until the median reference is formed
+    // Raw frame-to-frame movement of tracked contacts that moved less than 4 * NVT_FUZZ (a resting or slow finger): frames, summed
+    // and largest step per axis, in coordinate units. The size of this noise is what NVT_FUZZ has to cover.
+    unsigned long jitter_frames, jitter_sum;
+    int jitter_max;
     struct nvt_slot slots[NVT_SLOTS];
     // Scratch for nvt_touch_process: 19 KB, kept here because kernel threads have 16 KiB stacks (a stack probe in the
     // function prologue faulted on hardware when these were locals).
