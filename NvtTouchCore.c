@@ -57,26 +57,25 @@ static int free_tracking_id(const struct nvt_touch_core *core) {
     return NVT_SLOTS;
 }
 
-// The reported position of a tracked finger for its raw one: a resting finger stays locked until it is NVT_UNLOCK away (it then jumps to
-// where it is), a moving one is followed and locks again once its last NVT_REST_FRAMES raw positions span less than NVT_REST_SPAN.
+// Smoothing factor (1/65536) of a first-order low-pass filter with this cutoff, sampled once a frame: w / (1 + w), w = 2 pi fc / rate.
+static long filter_alpha(long cutoff_mhz) {
+    const long w=cutoff_mhz*411775/(1000L*NVT_FRAME_HZ);   // 2 pi * 65536 = 411775
+    return w*65536/(65536+w);
+}
+
+// The reported position of a tracked finger for its raw one: an adaptive low-pass filter whose cutoff follows the finger's smoothed
+// speed (NvtTouchCore.h). It is continuous: no movement is held back and released in one step.
 // A frame whose blob is below the down threshold (a finger lifting off, or barely touching) moves nothing: its centroid is the least
 // reliable, and the last frames before a lift otherwise give the lift-off a velocity it did not have.
-static void follow(struct nvt_touch_core *core, struct nvt_slot *slot, int x, int y, int weak) {
+static void follow(struct nvt_slot *slot, int x, int y, int weak) {
     if (weak) return;
-    slot->hx[slot->hn % NVT_REST_FRAMES]=x;slot->hy[slot->hn % NVT_REST_FRAMES]=y;++slot->hn;
-    if (!slot->moving) {
-        const int dx=x-slot->rx,dy=y-slot->ry;
-        if (dx>NVT_UNLOCK || dx<-NVT_UNLOCK || dy>NVT_UNLOCK || dy<-NVT_UNLOCK) {slot->moving=1;slot->rx=x;slot->ry=y;++core->unlocks;}
-        return;
-    }
-    slot->rx=x;slot->ry=y;
-    if (slot->hn<NVT_REST_FRAMES) return;
-    int lx=x,hx=x,ly=y,hy=y;
-    for (int k=0;k<NVT_REST_FRAMES;++k) {
-        if (slot->hx[k]<lx) lx=slot->hx[k]; if (slot->hx[k]>hx) hx=slot->hx[k];
-        if (slot->hy[k]<ly) ly=slot->hy[k]; if (slot->hy[k]>hy) hy=slot->hy[k];
-    }
-    if (hx-lx<NVT_REST_SPAN && hy-ly<NVT_REST_SPAN) {slot->moving=0;slot->rx=(lx+hx)/2;slot->ry=(ly+hy)/2;++core->rests;}
+    const long sx=((long)x*16-slot->fx)*NVT_FRAME_HZ/16,sy=((long)y*16-slot->fy)*NVT_FRAME_HZ/16;
+    const long speed_alpha=filter_alpha(NVT_SPEED_CUTOFF_MHZ);
+    slot->vx+=(sx-slot->vx)*speed_alpha/65536;slot->vy+=(sy-slot->vy)*speed_alpha/65536;
+    const long speed=(slot->vx<0?-slot->vx:slot->vx)+(slot->vy<0?-slot->vy:slot->vy);
+    const long alpha=filter_alpha(NVT_MIN_CUTOFF_MHZ+speed*NVT_CUTOFF_PER_SPEED/2);
+    slot->fx+=((long)x*16-slot->fx)*alpha/65536;slot->fy+=((long)y*16-slot->fy)*alpha/65536;
+    slot->rx=(int)((slot->fx+8)/16);slot->ry=(int)((slot->fy+8)/16);
 }
 
 // The reason a tracked finger at (x, y) matched none of this frame's blobs, judged by the nearest blob of any kind.
@@ -228,26 +227,28 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         }
         if (slot->missed) {++core->holds_bridged;slot->missed=0;}
         used_contact[best]=1;found[best].slot=s;found[best].tracking_id=slot->tracking_id;
-        {
-            const int dx=found[best].x-slot->x,dy=found[best].y-slot->y,ax=dx<0?-dx:dx,ay=dy<0?-dy:dy;
-            if (ax<4*NVT_FUZZ && ay<4*NVT_FUZZ) {
-                ++core->jitter_frames;core->jitter_sum+=(unsigned long)(ax+ay);
-                if (ax>core->jitter_max) core->jitter_max=ax;
-                if (ay>core->jitter_max) core->jitter_max=ay;
-            }
-        }
+        const int dx=found[best].x-slot->x,dy=found[best].y-slot->y,ax=dx<0?-dx:dx,ay=dy<0?-dy:dy;
+        const int px=slot->rx,py=slot->ry;
         slot->x=found[best].x;slot->y=found[best].y;++slot->age;
-        follow(core,slot,found[best].x,found[best].y,found[best].peak<NVT_DOWN_THRESHOLD);
+        follow(slot,found[best].x,found[best].y,found[best].peak<NVT_DOWN_THRESHOLD);
         found[best].x=slot->rx;found[best].y=slot->ry;
+        if (ax<4*NVT_FUZZ && ay<4*NVT_FUZZ) {
+            const int ox=slot->rx>px?slot->rx-px:px-slot->rx,oy=slot->ry>py?slot->ry-py:py-slot->ry;
+            ++core->jitter_frames;core->jitter_sum+=(unsigned long)(ax+ay);core->smoothed_sum+=(unsigned long)(ox+oy);
+            if (ax>core->jitter_max) core->jitter_max=ax;
+            if (ay>core->jitter_max) core->jitter_max=ay;
+            if (ox>core->smoothed_max) core->smoothed_max=ox;
+            if (oy>core->smoothed_max) core->smoothed_max=oy;
+        }
     }
     for (int c=0;c<nfound;++c) {
         if (used_contact[c] || found[c].peak<NVT_DOWN_THRESHOLD) continue;
         for (int s=0;s<NVT_SLOTS;++s) {
             if (core->slots[s].active) continue;
             core->slots[s].active=1;core->slots[s].tracking_id=free_tracking_id(core);core->slots[s].age=1;core->slots[s].missed=0;
-            core->slots[s].moving=0;core->slots[s].hn=0;
             core->slots[s].x=found[c].x;core->slots[s].y=found[c].y;
             core->slots[s].rx=found[c].x;core->slots[s].ry=found[c].y;
+            core->slots[s].fx=(long)found[c].x*16;core->slots[s].fy=(long)found[c].y*16;core->slots[s].vx=core->slots[s].vy=0;
             found[c].slot=s;found[c].tracking_id=core->slots[s].tracking_id;used_contact[c]=1;break;
         }
     }

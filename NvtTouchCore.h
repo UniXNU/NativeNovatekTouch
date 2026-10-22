@@ -12,12 +12,15 @@
 #define NVT_SUPER_RESOLUTION 10
 // Steps below 4 * NVT_FUZZ count as the positional noise of a resting or slow finger (jitter_*), in coordinate units (0.1 panel px).
 #define NVT_FUZZ 60
-// A resting finger is locked where it rests: it unlocks once it is NVT_UNLOCK away, and a moving finger locks again when its last
-// NVT_REST_FRAMES positions span less than NVT_REST_SPAN (all in 0.1 px). int-271: resting fingers wandered 5 px per frame (24 px at most),
-// so SpringBoard saw 100..180 pt/s at lift-off and opened the app switcher once in a dozen pauses.
-#define NVT_UNLOCK 200
-#define NVT_REST_FRAMES 6
-#define NVT_REST_SPAN 200
+// Reported positions are smoothed with an adaptive low-pass filter: its cutoff is NVT_MIN_CUTOFF_MHZ for a resting finger and rises by
+// NVT_CUTOFF_PER_SPEED mHz for each coordinate unit per second of the finger's smoothed speed, so a still finger keeps its position
+// through the centroid noise and a moving one is followed with a frame or two of lag. The speed itself is smoothed at NVT_SPEED_CUTOFF_MHZ.
+// int-271: resting fingers wandered 5 px per frame (24 px at most). int-273: a lock that held a slow finger until it was 20 px away
+// reported every slow movement as rests and 20 px jumps (330 unlocks for 171 strokes), and swipes that paused rarely opened the switcher.
+#define NVT_FRAME_HZ 120
+#define NVT_MIN_CUTOFF_MHZ 1000
+#define NVT_CUTOFF_PER_SPEED 3   // mHz per (unit/s), halved: 1.5
+#define NVT_SPEED_CUTOFF_MHZ 1000
 // The centroid weighs a node by how far it is above this share of its blob's peak (percent), so the fringe nodes that come and go with
 // noise do not pull the position around.
 #define NVT_CENTROID_FLOOR 30
@@ -47,9 +50,9 @@ struct nvt_contact {
 
 struct nvt_slot {
     int active, tracking_id, age, x, y;
-    int rx, ry;      // the position last reported, after the fuzz filter (x, y stay raw: tracking uses them)
-    int moving;      // following the finger; 0 while it is locked at rest
-    int hx[NVT_REST_FRAMES], hy[NVT_REST_FRAMES], hn;   // its last raw positions
+    int rx, ry;      // the position last reported, after the filter (x, y stay raw: tracking uses them)
+    long fx, fy;     // the filtered position, in 1/16 coordinate units
+    long vx, vy;     // the smoothed speed, coordinate units per second
     int missed;      // consecutive frames without a matching blob (held while <= NVT_HOLD_FRAMES)
     int miss_reason; // why the first of those frames had no match (NVT_MISS_*)
 };
@@ -64,11 +67,12 @@ struct nvt_touch_core {
     unsigned startup_count;
     int16_t startup[NVT_STARTUP_FRAMES][NVT_NODES];   // collected until the median reference is formed
     // Raw frame-to-frame movement of tracked contacts that moved less than 4 * NVT_FUZZ (a resting or slow finger): frames, summed
-    // and largest step per axis, in coordinate units: the noise the rest lock has to cover. Rests: times a moving finger was locked;
-    // unlocks: times a locked one started moving.
+    // and largest step per axis, in coordinate units: the noise the filter has to cover. Smoothed: the reported steps of those frames,
+    // summed and largest: what is left of that noise.
     unsigned long jitter_frames, jitter_sum;
     int jitter_max;
-    unsigned long rests, unlocks;
+    unsigned long smoothed_sum;
+    int smoothed_max;
     // Maxima folded into a stronger one within NVT_MERGE_SPAN nodes (one finger seen as two peaks).
     unsigned long merges;
     // Fingers that went unseen and came back within NVT_HOLD_FRAMES, fingers lifted per miss reason, and frames by type (2 / 4).

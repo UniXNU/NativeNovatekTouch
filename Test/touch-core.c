@@ -50,8 +50,8 @@ int main(void){
             assert(abs(c[0].y-nvt_touch_row_center(20)*NVT_SUPER_RESOLUTION)<120);
             if(!id)id=c[0].tracking_id;assert(c[0].tracking_id==id&&c[0].slot>=0);}
     }
-    // Sub-pixel position: a blob between columns 30 and 31 lands between their centres.
-    base_frame(f,2);blob(f,20.0,30.5,900,1.3);int n=feed(f,c,12);assert(n==1);
+    // Sub-pixel position: a blob between columns 30 and 31 lands between their centres once the smoothing has settled.
+    int n=0;for(int frame=0;frame<40;++frame){base_frame(f,2);blob(f,20.0,30.5,900,1.3);n=feed(f,c,12);}assert(n==1);
     int lo=nvt_touch_column_center(30)*NVT_SUPER_RESOLUTION,hi=nvt_touch_column_center(31)*NVT_SUPER_RESOLUTION;
     assert(c[0].x>lo+100&&c[0].x<hi-100&&c[0].tracking_id==id);
     // Lift, then a new touch is a new contact (not reported on its first frame).
@@ -102,35 +102,45 @@ int main(void){
         lift();
     }
     assert(top>=1&&top<=NVT_SLOTS);
-    // A resting finger whose centroid wanders by up to 0.15 node (8 px, the noise int-271 measured) reports one position; a
-    // moving one is followed exactly, and locks again where it stops.
+    // A resting finger whose centroid wanders by up to 0.15 node (8 px, the noise int-271 measured) reports steps of two pixels at most.
     settle();
-    int rest_x=-1,rest_y=-1;
-    for(int frame=0;frame<40;++frame){
+    int prev_x=-1,prev_y=-1;
+    for(int frame=0;frame<60;++frame){
         base_frame(f,2);blob(f,20.0+0.15*((frame%3)-1),30.0+0.1*(((frame*7)%5)-2),900,1.3);n=feed(f,c,12);
         if(frame<2)continue;
         assert(n==1);
-        if(rest_x<0){rest_x=c[0].x;rest_y=c[0].y;}
-        assert(c[0].x==rest_x&&c[0].y==rest_y);
+        if(frame>=20)assert(abs(c[0].x-prev_x)<=20&&abs(c[0].y-prev_y)<=20);
+        prev_x=c[0].x;prev_y=c[0].y;
     }
-    assert(core.jitter_frames>0&&core.unlocks==0);
-    for(int frame=0;frame<20;++frame){base_frame(f,2);blob(f,20.0,30.0+frame*0.5,900,1.3);n=feed(f,c,12);assert(n==1);}
-    {   // the last blob sits between columns 39 and 40: the reported position is the raw one
-        const int target=(nvt_touch_column_center(39)+nvt_touch_column_center(40))*NVT_SUPER_RESOLUTION/2;
-        assert(core.unlocks==1&&c[0].x>rest_x+1000&&abs(c[0].x-target)<120);
-    }
-    {   // it stops there: locked within NVT_REST_FRAMES frames, and the position holds through the noise
-        int locked_x=-1;
-        for(int frame=0;frame<30;++frame){
-            base_frame(f,2);blob(f,20.0+0.15*((frame%3)-1),39.5+0.15*((frame%2)*2-1),900,1.3);n=feed(f,c,12);assert(n==1);
-            if(frame<NVT_REST_FRAMES+1)continue;
-            if(locked_x<0)locked_x=c[0].x;
-            assert(c[0].x==locked_x);
+    assert(core.jitter_frames>0&&core.smoothed_sum<core.jitter_sum/4);
+    // A slow drag (1.25 px a frame, 150 px/s) moves the report every frame and never in jumps (int-273: a rest lock held it, then let
+    // it go 20 px at once); it ends within a few pixels of the finger.
+    {
+        int moved=0;
+        for(int frame=0;frame<120;++frame){
+            base_frame(f,2);blob(f,20.0,30.0+frame*0.025,900,1.3);n=feed(f,c,12);assert(n==1);
+            const int step=c[0].x-prev_x;
+            assert(step>=-5&&step<=40);
+            if(frame>=40&&step>0)++moved;
+            prev_x=c[0].x;
         }
-        assert(core.rests>=1);
-        // lifting off: the blob fades below the down threshold and slides; the reported position does not follow
-        for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0+frame*0.4,39.5+frame*0.6,250-frame*10,1.3);n=feed(f,c,12);
-            assert(n==1&&c[0].x==locked_x);}
+        assert(moved>=70);
+        const int truth=(int)((nvt_touch_column_center(32)+0.975*(nvt_touch_column_center(33)-nvt_touch_column_center(32)))*NVT_SUPER_RESOLUTION);
+        assert(abs(c[0].x-truth)<80);
+    }
+    // A fast swipe (half a node a frame, 3000 px/s) is followed within about a frame.
+    for(int frame=0;frame<16;++frame){base_frame(f,2);blob(f,20.0,35.0+frame*0.5,900,1.3);n=feed(f,c,12);assert(n==1);}
+    {
+        const int truth=(nvt_touch_column_center(42)+nvt_touch_column_center(43))*NVT_SUPER_RESOLUTION/2;
+        assert(c[0].x<truth&&truth-c[0].x<400);
+    }
+    {   // it stops there and settles on the finger; lifting off, the blob fades below the down threshold and slides, and the reported
+        // position does not follow
+        for(int frame=0;frame<60;++frame){base_frame(f,2);blob(f,20.0,42.5,900,1.3);n=feed(f,c,12);assert(n==1);}
+        const int still_x=c[0].x;
+        assert(abs(still_x-(nvt_touch_column_center(42)+nvt_touch_column_center(43))*NVT_SUPER_RESOLUTION/2)<60);
+        for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0+frame*0.4,42.5+frame*0.6,250-frame*10,1.3);n=feed(f,c,12);
+            assert(n==1&&c[0].x==still_x);}
     }
     // One finger with two maxima two nodes apart is one contact between them; fingers four nodes apart stay two.
     settle();
@@ -162,6 +172,6 @@ int main(void){
     for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0,30.0,900,1.3);feed(f,c,12);}
     for(int k=0;k<=NVT_HOLD_FRAMES;++k){base_frame(f,2);blob(f,20.0,30.0,900,6.0);n=feed(f,c,12);}
     assert(n==0&&core.ends[NVT_MISS_PALM]==1);
-    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, rest lock, lift freeze, hold, split peaks; synthetic frames, no hardware");
+    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, adaptive smoothing, lift freeze, hold, split peaks; synthetic frames, no hardware");
     return 0;
 }
