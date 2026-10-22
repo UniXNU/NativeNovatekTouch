@@ -39,7 +39,6 @@ struct nvt_touch_core {
     unsigned startup_count;
     int16_t startup[NVT_STARTUP_FRAMES][NVT_NODES];   // collected until the median reference is formed
     struct nvt_slot slots[NVT_SLOTS];
-    int next_tracking_id;
     // Scratch for nvt_touch_process: 19 KB, kept here because kernel threads have 16 KiB stacks (a stack probe in the
     // function prologue faulted on hardware when these were locals).
     int delta[NVT_NODES];

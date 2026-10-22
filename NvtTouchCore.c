@@ -43,7 +43,18 @@ int nvt_touch_map_edge_axis(int value, int maximum, int low_edge_bias) {
 
 void nvt_touch_reset(struct nvt_touch_core *core) {
     memset(core, 0, sizeof(*core));
-    core->next_tracking_id = 1;
+}
+
+// The lowest identifier no active slot holds, 1..NVT_SLOTS. The identifier is the contact's path index upstream, and backboardd drops
+// every path whose index reaches its path limit (int-267: after about 33 strokes no touch reached SpringBoard), so identifiers are
+// reused once their finger is up instead of counting up for the whole boot.
+static int free_tracking_id(const struct nvt_touch_core *core) {
+    for (int id=1;id<=NVT_SLOTS;++id) {
+        int taken=0;
+        for (int s=0;s<NVT_SLOTS && !taken;++s) taken=core->slots[s].active && core->slots[s].tracking_id==id;
+        if (!taken) return id;
+    }
+    return NVT_SLOTS;
 }
 
 static void sort_i16(int16_t *v, unsigned n) {
@@ -152,7 +163,7 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         if (used_contact[c] || found[c].peak<NVT_DOWN_THRESHOLD) continue;
         for (int s=0;s<NVT_SLOTS;++s) {
             if (core->slots[s].active) continue;
-            core->slots[s].active=1;core->slots[s].tracking_id=core->next_tracking_id++;core->slots[s].age=1;
+            core->slots[s].active=1;core->slots[s].tracking_id=free_tracking_id(core);core->slots[s].age=1;
             core->slots[s].x=found[c].x;core->slots[s].y=found[c].y;
             found[c].slot=s;found[c].tracking_id=core->slots[s].tracking_id;used_contact[c]=1;break;
         }
