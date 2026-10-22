@@ -96,6 +96,22 @@ int main(void){
         base_frame(f,2);assert(feed(f,c,12)==0);
     }
     assert(top>=1&&top<=NVT_SLOTS);
-    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules; synthetic frames, no hardware");
+    // A resting finger whose centroid wanders by a fraction of a node reports one position (the fuzz filter); a moving one is followed.
+    settle();
+    int rest_x=-1,rest_y=-1;
+    for(int frame=0;frame<40;++frame){
+        base_frame(f,2);blob(f,20.0+0.01*(frame%3),30.0+0.01*((frame*7)%5),900,1.3);n=feed(f,c,12);
+        if(frame<2)continue;
+        assert(n==1);
+        if(rest_x<0){rest_x=c[0].x;rest_y=c[0].y;}
+        assert(c[0].x==rest_x&&c[0].y==rest_y);
+    }
+    assert(core.jitter_frames>0);
+    for(int frame=0;frame<20;++frame){base_frame(f,2);blob(f,20.0,30.0+frame*0.5,900,1.3);n=feed(f,c,12);assert(n==1);}
+    {   // the last blob sits between columns 39 and 40: the reported position follows it to within the filter's lag
+        const int target=(nvt_touch_column_center(39)+nvt_touch_column_center(40))*NVT_SUPER_RESOLUTION/2;
+        assert(c[0].x>rest_x+1000&&abs(c[0].x-target)<2*NVT_FUZZ+120);
+    }
+    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, fuzz; synthetic frames, no hardware");
     return 0;
 }
