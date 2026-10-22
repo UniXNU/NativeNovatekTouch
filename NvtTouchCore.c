@@ -160,6 +160,27 @@ int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsign
         }
         label[i]=found;
     }
+    // One finger can show two maxima a node or two apart (a ridge across it). Left as two blobs, the finger's centroid jumps by half a
+    // node whenever the ridge moves; a peak with a stronger one within NVT_MERGE_SPAN nodes is folded into it.
+    int into[MAX_PEAKS];
+    for (int p=0;p<npeaks;++p) {
+        into[p]=p;
+        int pr=peaks[p].index/NVT_COLUMNS,pc=peaks[p].index%NVT_COLUMNS;
+        for (int q=0;q<npeaks;++q) {
+            if (q==p) continue;
+            int dr=peaks[q].index/NVT_COLUMNS-pr,dc=peaks[q].index%NVT_COLUMNS-pc;
+            if (dr<-NVT_MERGE_SPAN||dr>NVT_MERGE_SPAN||dc<-NVT_MERGE_SPAN||dc>NVT_MERGE_SPAN) continue;
+            int stronger=peaks[q].value>peaks[p].value || (peaks[q].value==peaks[p].value && q<p);
+            if (stronger && (into[p]==p || peaks[q].value>peaks[into[p]].value)) into[p]=q;
+        }
+    }
+    for (int p=0;p<npeaks;++p) {
+        int r=p;
+        while (into[r]!=r) r=into[r];   // values rise strictly along the chain, so it ends
+        if (r!=p) ++core->merges;
+        into[p]=r;
+    }
+    for (int i=0;i<NVT_NODES;++i) if (label[i]>=0) label[i]=into[label[i]];
     struct blob blobs[MAX_PEAKS];
     for (int p=0;p<npeaks;++p) memset(&blobs[p],0,sizeof(blobs[p])),blobs[p].peak=peaks[p].value,blobs[p].label=p;
     for (int i=0;i<NVT_NODES;++i) {

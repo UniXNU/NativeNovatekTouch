@@ -21,6 +21,9 @@
 // The centroid weighs a node by how far it is above this share of its blob's peak (percent), so the fringe nodes that come and go with
 // noise do not pull the position around.
 #define NVT_CENTROID_FLOOR 30
+// Maxima this many nodes apart or closer (rows and columns) are one finger. int-272: 187 unlocks for 59 strokes, the lift-off speeds
+// stepped by half a node per frame.
+#define NVT_MERGE_SPAN 2
 // Frames a tracked finger may go unseen before it counts as lifted (8.3 ms each at 120 Hz). The finger is reported where it was meanwhile.
 #define NVT_HOLD_FRAMES 3
 #define NVT_SLOTS 12
@@ -66,6 +69,8 @@ struct nvt_touch_core {
     unsigned long jitter_frames, jitter_sum;
     int jitter_max;
     unsigned long rests, unlocks;
+    // Maxima folded into a stronger one within NVT_MERGE_SPAN nodes (one finger seen as two peaks).
+    unsigned long merges;
     // Fingers that went unseen and came back within NVT_HOLD_FRAMES, fingers lifted per miss reason, and frames by type (2 / 4).
     unsigned long holds_bridged, ends[NVT_MISS_KINDS], frames_by_type[2];
     struct nvt_slot slots[NVT_SLOTS];

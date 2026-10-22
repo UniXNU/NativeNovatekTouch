@@ -132,6 +132,16 @@ int main(void){
         for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0+frame*0.4,39.5+frame*0.6,250-frame*10,1.3);n=feed(f,c,12);
             assert(n==1&&c[0].x==locked_x);}
     }
+    // One finger with two maxima two nodes apart is one contact between them; fingers four nodes apart stay two.
+    settle();
+    for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0,30.0,900,0.8);blob(f,20.0,32.0,800,0.8);n=feed(f,c,12);}
+    {
+        const int left=nvt_touch_column_center(30)*NVT_SUPER_RESOLUTION,right=nvt_touch_column_center(32)*NVT_SUPER_RESOLUTION;
+        assert(n==1&&core.merges>0&&c[0].x>left&&c[0].x<right);
+    }
+    settle();
+    for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0,30.0,900,0.8);blob(f,20.0,34.0,800,0.8);n=feed(f,c,12);}
+    assert(n==2&&core.merges==0);
     // A finger missing for up to NVT_HOLD_FRAMES frames is held where it was, with its id, and continues when it reappears; one missing
     // longer is lifted, and the reason (no blob at all) is counted.
     settle();
@@ -152,6 +162,6 @@ int main(void){
     for(int frame=0;frame<3;++frame){base_frame(f,2);blob(f,20.0,30.0,900,1.3);feed(f,c,12);}
     for(int k=0;k<=NVT_HOLD_FRAMES;++k){base_frame(f,2);blob(f,20.0,30.0,900,6.0);n=feed(f,c,12);}
     assert(n==0&&core.ends[NVT_MISS_PALM]==1);
-    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, rest lock, lift freeze, hold; synthetic frames, no hardware");
+    puts("PASS: NvtTouchCore baseline median, thresholds, centroid, tracking ids, palm/limit/edge rules, rest lock, lift freeze, hold, split peaks; synthetic frames, no hardware");
     return 0;
 }
